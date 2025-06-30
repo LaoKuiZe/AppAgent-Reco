@@ -285,6 +285,85 @@ while round_count < configs["MAX_ROUNDS"]:
 
 if task_complete:
     print_with_color("Task completed successfully", "yellow")
+    
+    # 隐私保护模式 - 点击不相关内容来迷惑推荐算法
+    privacy_protection = configs.get("PRIVACY_PROTECTION", False)
+    # 处理环境变量字符串转布尔值
+    if isinstance(privacy_protection, str):
+        privacy_protection = privacy_protection.lower() in ('true', '1', 'yes', 'on')
+    
+    if privacy_protection:
+        print_with_color("Starting privacy protection mode...", "cyan")
+        privacy_clicks_target = configs.get("PRIVACY_CLICKS", 3)
+        privacy_clicks_count = 0
+        privacy_round = 0
+        max_privacy_rounds = 10  # 防止无限循环
+        
+        while privacy_clicks_count < privacy_clicks_target and privacy_round < max_privacy_rounds:
+            privacy_round += 1
+            print_with_color(f"Privacy protection round {privacy_round} (clicked {privacy_clicks_count}/{privacy_clicks_target} items)", "cyan")
+            
+            # 获取当前截图
+            screenshot_path = controller.get_screenshot(f"{dir_name}_privacy_{privacy_round}", task_dir)
+            xml_path = controller.get_xml(f"{dir_name}_privacy_{privacy_round}", task_dir)
+            
+            if screenshot_path == "ERROR" or xml_path == "ERROR":
+                print_with_color("Failed to get screenshot for privacy protection", "red")
+                break
+            
+            # 处理UI元素
+            clickable_list = []
+            traverse_tree(xml_path, clickable_list, "clickable", True)
+            
+            if not clickable_list:
+                print_with_color("No clickable elements found for privacy protection", "yellow")
+                break
+                
+            draw_bbox_multi(screenshot_path, os.path.join(task_dir, f"{dir_name}_privacy_{privacy_round}_labeled.png"), 
+                           clickable_list, dark_mode=configs["DARK_MODE"])
+            image = os.path.join(task_dir, f"{dir_name}_privacy_{privacy_round}_labeled.png")
+            
+            # 使用隐私保护提示词
+            privacy_prompt = prompts.privacy_protection_template
+            privacy_prompt = re.sub(r"<task_description>", task_desc, privacy_prompt)
+            
+            print_with_color("Analyzing screen for unrelated content to click...", "cyan")
+            status, rsp = mllm.get_model_response(privacy_prompt, [image])
+            
+            if status:
+                res = parse_explore_rsp(rsp)
+                act_name = res[0]
+                
+                if act_name == "FINISH":
+                    print_with_color("Privacy protection completed", "cyan")
+                    break
+                elif act_name == "tap":
+                    _, area = res
+                    if area <= len(clickable_list):
+                        tl, br = clickable_list[area - 1].bbox
+                        x, y = (tl[0] + br[0]) // 2, (tl[1] + br[1]) // 2
+                        ret = controller.tap(x, y)
+                        if ret != "ERROR":
+                            privacy_clicks_count += 1
+                            print_with_color(f"Privacy click {privacy_clicks_count}: tapped unrelated content", "cyan")
+                            time.sleep(2)  # 短暂等待
+                        else:
+                            print_with_color("Privacy tap failed", "red")
+                    else:
+                        print_with_color("Invalid element number for privacy click", "red")
+                else:
+                    print_with_color(f"Unexpected action for privacy protection: {act_name}", "yellow")
+            else:
+                print_with_color(f"Privacy protection AI response failed: {rsp}", "red")
+                break
+            
+            time.sleep(configs["REQUEST_INTERVAL"])
+        
+        if privacy_clicks_count > 0:
+            print_with_color(f"Privacy protection completed: clicked {privacy_clicks_count} unrelated items", "green")
+        else:
+            print_with_color("Privacy protection: no unrelated content was clicked", "yellow")
+            
 elif round_count == configs["MAX_ROUNDS"]:
     print_with_color("Task finished due to reaching max rounds", "yellow")
 else:
