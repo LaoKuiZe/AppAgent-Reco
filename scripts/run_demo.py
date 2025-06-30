@@ -2,14 +2,22 @@ import os
 import sys
 import streamlit as st
 from io import StringIO
-from utils import word_iterator
 from contextlib import contextmanager
 import re
 import base64
+import time
+import datetime
+import json
 
+# 修复路径并导入当前项目的模块
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../scripts')))
-from sub_task import subtask
+from config import load_config
+from and_controller import list_all_devices, AndroidController, traverse_tree
+from model import parse_explore_rsp, parse_grid_rsp, OpenAIModel, QwenModel
+from utils import print_with_color, draw_bbox_multi, draw_grid
+import prompts
 
 
 def get_image_base64(image_path):
@@ -19,6 +27,102 @@ def get_image_base64(image_path):
     except Exception as e:
         st.error(f"Error reading image {image_path}: {e}")
         return ""
+
+
+def execute_task(task_desc, privacy_protection=False):
+    """
+    使用 subprocess 调用 task_executor.py 来执行任务
+    """
+    import subprocess
+    import tempfile
+    import glob
+    
+    print_with_color(f"Starting task execution: {task_desc}", "blue")
+    if privacy_protection:
+        print_with_color("Privacy protection mode enabled", "cyan")
+    
+    # 创建临时文件来传递任务描述
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(task_desc)
+        temp_file = f.name
+    
+    try:
+        # 获取执行前的任务目录状态
+        tasks_dir = "./tasks"
+        if not os.path.exists(tasks_dir):
+            os.makedirs(tasks_dir)
+        
+        before_dirs = set(os.listdir(tasks_dir)) if os.path.exists(tasks_dir) else set()
+        
+        # 设置环境变量来控制隐私保护
+        env = os.environ.copy()
+        if privacy_protection:
+            env['PRIVACY_PROTECTION'] = 'true'
+        else:
+            env['PRIVACY_PROTECTION'] = 'false'
+        
+        # 使用 subprocess 调用 task_executor，传入任务描述
+        process = subprocess.Popen(
+            ["python3", "scripts/task_executor.py", "--app", "general"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=os.path.abspath("."),
+            env=env
+        )
+        
+        # 发送任务描述到子进程
+        stdout, _ = process.communicate(input=task_desc + "\n")
+        
+        # 在侧边栏显示输出
+        if stdout:
+            for line in stdout.split('\n'):
+                if line.strip():
+                    print(line)  # 这会被 capture_and_stream 捕获
+        
+        # 查找新生成的任务目录
+        after_dirs = set(os.listdir(tasks_dir)) if os.path.exists(tasks_dir) else set()
+        new_dirs = after_dirs - before_dirs
+        
+        final_screenshot = None
+        if new_dirs:
+            # 找到最新的任务目录
+            latest_dir = max(new_dirs, key=lambda d: os.path.getctime(os.path.join(tasks_dir, d)))
+            task_dir_path = os.path.join(tasks_dir, latest_dir)
+            
+            # 查找最后的标注截图
+            labeled_images = glob.glob(os.path.join(task_dir_path, "*_labeled.png"))
+            if labeled_images:
+                # 按文件名排序，取最后一个
+                labeled_images.sort()
+                final_screenshot = labeled_images[-1]
+            else:
+                # 如果没有标注图片，找普通截图
+                screenshots = glob.glob(os.path.join(task_dir_path, "*.png"))
+                if screenshots:
+                    screenshots.sort()
+                    final_screenshot = screenshots[-1]
+        
+        # 根据返回码生成响应
+        if process.returncode == 0:
+            response = f"✅ **Task completed successfully!**\n\nTask: '{task_desc}'\n\nThe task was executed using AppAgent with real-time mobile device interaction."
+            if final_screenshot and "privacy" in final_screenshot:
+                response += "\n\n🔒 **Privacy protection activated** - Clicked unrelated content to mislead recommendation algorithms."
+        else:
+            response = f"❌ **Task execution failed**\n\nTask: '{task_desc}'\n\nProcess returned with code: {process.returncode}"
+        
+        return response, final_screenshot
+        
+    except Exception as e:
+        error_response = f"❌ **Error executing task**\n\nTask: '{task_desc}'\n\nError: {str(e)}"
+        return error_response, None
+    finally:
+        # 清理临时文件
+        try:
+            os.unlink(temp_file)
+        except:
+            pass
 
 
 if 'submitted' not in st.session_state:
@@ -41,19 +145,22 @@ if 'current_app' not in st.session_state:
 if 'selected_example_query' not in st.session_state:
     st.session_state.selected_example_query = ""
 
+if 'privacy_protection_enabled' not in st.session_state:
+    st.session_state.privacy_protection_enabled = False
+
 
 def submit_query():
     st.session_state.submitted = True
 
 st.set_page_config(
-    page_title="AppAgent-Pro | CIKM 2025 Demo",
+    page_title="AppAgent | Mobile AI Assistant Demo",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'Get Help': 'https://github.com/LaoKuiZe/AppAgent-Pro',
-        'Report a bug': 'https://github.com/LaoKuiZe/AppAgent-Pro/issues',
-        'About': "# AppAgent-Pro\na system that represents a significant advancement towards instilling genuine proactivity within the mobile agent paradigm."
+        'Get Help': 'https://github.com/mnotgod96/AppAgent',
+        'Report a bug': 'https://github.com/mnotgod96/AppAgent/issues',
+        'About': "# AppAgent\nA novel LLM-based multimodal agent framework designed to operate smartphone applications."
     }
 )
 
@@ -698,10 +805,9 @@ with main_col:
     st.markdown("""
     <div class="hero-section">
         <div class="hero-content">
-            <div class="cikm-badge">CIKM 2025 Demo Track</div>
-            <h1 class="hero-title">AppAgent-Pro</h1>
+            <h1 class="hero-title">AppAgent</h1>
             <p class="hero-subtitle">
-                An Intelligent Mobile Application Agent with Proactive App Integration Capabilities
+                A novel LLM-based multimodal agent framework designed to operate smartphone applications
             </p>
         </div>
     </div>
@@ -710,24 +816,24 @@ with main_col:
     st.markdown("""
     <div class="feature-cards">
         <div class="feature-card">
-            <div class="feature-icon">🧠</div>
-            <div class="feature-title">Proactive Decision Making</div>
-            <div class="feature-description">
-                Automatically determines whether to leverage mobile apps (YouTube, Amazon) based on query context without user intervention.
-            </div>
-        </div>
-        <div class="feature-card">
-            <div class="feature-icon">🔄</div>
-            <div class="feature-title">Dynamic App Integration</div>
-            <div class="feature-description">
-                Seamlessly integrates with none, one, or multiple mobile applications to enhance response quality and provide richer information.
-            </div>
-        </div>
-        <div class="feature-card">
             <div class="feature-icon">📱</div>
-            <div class="feature-title">Real-time Execution</div>
+            <div class="feature-title">Mobile App Control</div>
             <div class="feature-description">
-                Observe live interaction with mobile applications and see how the agent navigates apps to gather relevant information.
+                Direct interaction with mobile applications through visual understanding and touch automation.
+            </div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🧠</div>
+            <div class="feature-title">Multimodal Understanding</div>
+            <div class="feature-description">
+                Combines visual perception with natural language processing to understand and execute complex tasks.
+            </div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🎯</div>
+            <div class="feature-title">Task Automation</div>
+            <div class="feature-description">
+                Learns app interfaces and automates complex workflows through step-by-step interaction planning.
             </div>
         </div>
     </div>
@@ -735,10 +841,10 @@ with main_col:
     
     st.markdown("""
         <h2 style="font-size: 1.8rem; font-weight: 600; color: var(--text-color); 
-                   margin-bottom: 0.8rem; text-align: center;">Try AppAgent-Pro</h2>
+                   margin-bottom: 0.8rem; text-align: center;">Try AppAgent</h2>
         <p style="color: var(--light-text); text-align: center; margin-bottom: 1.5rem; 
                   font-size: 1rem; max-width: 600px; margin-left: auto; margin-right: auto;">
-           Enter your query below and watch how the agent proactively decides which apps to use
+           Enter your task description and watch how the agent interacts with mobile applications
         </p>
     """, unsafe_allow_html=True)
     
@@ -746,18 +852,18 @@ with main_col:
     col1, col2, col3 = st.columns(3, gap="medium")
     
     with col1:
-        if st.button("🌍 How to quickly learn a new foreign language?", key="example1", use_container_width=True):
-            st.session_state.selected_example_query = "How to quickly learn a new foreign language?"
+        if st.button("📧 Send email to contact", key="example1", use_container_width=True):
+            st.session_state.selected_example_query = "Send an email to my main contact"
             st.rerun()
     
     with col2:
-        if st.button("📱 Best budget smartphones under $300?", key="example2", use_container_width=True):
-            st.session_state.selected_example_query = "What are the best budget smartphones under $300?"
+        if st.button("� Take screenshot and share", key="example2", use_container_width=True):
+            st.session_state.selected_example_query = "Take a screenshot and share it via messaging app"
             st.rerun()
     
     with col3:
-        if st.button("🥗 Plan healthy meal prep for professionals", key="example3", use_container_width=True):
-            st.session_state.selected_example_query = "Plan a healthy meal prep for busy professionals"
+        if st.button("🎵 Play music from playlist", key="example3", use_container_width=True):
+            st.session_state.selected_example_query = "Open music app and play my favorite playlist"
             st.rerun()
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -771,8 +877,15 @@ with main_col:
             value=default_value,
             key="query_input",
             on_change=submit_query,
-            placeholder="Describe your task in natural language (e.g., 'How to quickly learn a new foreign language?')",
+            placeholder="Describe the mobile task you want to perform (e.g., 'Send an email to my main contact')",
             label_visibility="collapsed"
+        )
+        
+        # 隐私保护选项
+        st.session_state.privacy_protection_enabled = st.checkbox(
+            "🔒 Enable Privacy Protection",
+            value=st.session_state.privacy_protection_enabled,
+            help="After completing the task, the agent will automatically click unrelated content to mislead recommendation algorithms and protect your privacy."
         )
         
     with button_col:
@@ -792,27 +905,58 @@ st.sidebar.markdown("""
         This panel shows the agent's decision-making process in real-time. Watch how it:
     </p>
     <ul style="color: #e2e8f0; font-size: 0.85rem; line-height: 1.5; margin-top: 0.8rem; padding-left: 1.2rem;">
-        <li>Analyzes your query</li>
-        <li>Decides which apps to use</li>
-        <li>Executes mobile interactions</li>
-        <li>Integrates information</li>
+        <li>Analyzes your task requirements</li>
+        <li>Navigates mobile applications</li>
+        <li>Executes precise interactions</li>
+        <li>Protects your privacy (optional)</li>
     </ul>
 </div>
 """, unsafe_allow_html=True)
 
 st.sidebar.markdown("""
 <div style="background: rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; border: 1px solid rgba(255, 255, 255, 0.15);">
-    <h5 style="color: white; margin-top: 0; margin-bottom: 0.8rem;">Supported Applications</h5>
+    <h5 style="color: white; margin-top: 0; margin-bottom: 0.8rem;">Agent Capabilities</h5>
     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
         <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
-            <span style="color: #ff4757; margin-right: 8px;">📺</span> YouTube
+            <span style="color: #4CAF50; margin-right: 8px;">✓</span> Tap & Click
         </div>
         <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
-            <span style="color: #ff9f43; margin-right: 8px;">🛒</span> Amazon
+            <span style="color: #2196F3; margin-right: 8px;">✓</span> Text Input
+        </div>
+        <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
+            <span style="color: #FF9800; margin-right: 8px;">👆</span> Long Press
+        </div>
+        <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
+            <span style="color: #9C27B0; margin-right: 8px;">↔️</span> Swipe Gestures
         </div>
         <div style="display: flex; align-items: center; color: #a0aec0; font-size: 0.85rem;">
-            <span style="color: #54a0ff; margin-right: 8px;">🔜</span> More apps coming...
+            <span style="color: #607D8B; margin-right: 8px;">📱</span> Any Android App
         </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# 动态显示隐私保护状态
+privacy_status = "Enabled" if st.session_state.privacy_protection_enabled else "Disabled"
+privacy_color = "#4CAF50" if st.session_state.privacy_protection_enabled else "#FF5722"
+privacy_icon = "✓" if st.session_state.privacy_protection_enabled else "✗"
+
+st.sidebar.markdown(f"""
+<div style="background: rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; border: 1px solid rgba(255, 255, 255, 0.15);">
+    <h5 style="color: white; margin-top: 0; margin-bottom: 0.8rem;">🔒 Privacy Protection</h5>
+    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+        <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
+            <span style="color: {privacy_color}; margin-right: 8px;">{privacy_icon}</span> {privacy_status}
+        </div>
+        <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
+            <span style="color: #FF5722; margin-right: 8px;">🎯</span> Misleads algorithms
+        </div>
+        <div style="display: flex; align-items: center; color: #e2e8f0; font-size: 0.85rem;">
+            <span style="color: #9C27B0; margin-right: 8px;">🛡️</span> Protects privacy
+        </div>
+        <p style="color: #a0aec0; font-size: 0.8rem; margin: 0.5rem 0 0 0; line-height: 1.4;">
+            {('When enabled, the agent will click unrelated content after completing your task to confuse recommendation systems.' if st.session_state.privacy_protection_enabled else 'Enable the checkbox above to activate privacy protection mode.')}
+        </p>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -853,10 +997,11 @@ if run_clicked or st.session_state.submitted:
         </div>
         """, unsafe_allow_html=True)
     
-    from task_executor import execute_task
+    
+    # 使用本文件中定义的 execute_task 函数
     try:
         with capture_and_stream() as (output, main_container):
-            main_response, screenshot_paths = execute_task(final_query)
+            main_response, screenshot_paths = execute_task(final_query, st.session_state.privacy_protection_enabled)
             st.session_state.main_response = main_response
             st.session_state.screenshot_path = screenshot_paths
     except Exception as e:
@@ -893,64 +1038,31 @@ if run_clicked or st.session_state.submitted:
                     <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--secondary-color), var(--accent-color)); 
                              display: flex; align-items: center; justify-content: center; margin-right: 1rem; color: white; font-size: 1.2rem;">📱</div>
                     <div>
-                        <h3 style="margin: 0; color: var(--text-color); font-size: 1.4rem;">Application Screenshots</h3>
-                        <p style="margin: 0; color: var(--light-text); font-size: 0.9rem;">Live captures from mobile app interactions</p>
+                        <h3 style="margin: 0; color: var(--text-color); font-size: 1.4rem;">Mobile App Screenshot</h3>
+                        <p style="margin: 0; color: var(--light-text); font-size: 0.9rem;">Final state after task execution</p>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
             
-            if isinstance(st.session_state.screenshot_path, list):
-                st.markdown('<div class="screenshot-grid">', unsafe_allow_html=True)
-                for i, path in enumerate(st.session_state.screenshot_path):
-                    if path and os.path.exists(path):
-                        app_name = "Unknown App"
-                        app_color = "#6c757d"
-                        if "amazon" in path.lower():
-                            app_name = "Amazon"
-                            app_color = "#ff9500"
-                        elif "youtube" in path.lower():
-                            app_name = "YouTube"
-                            app_color = "#ff0000"
-                        
-                        st.markdown(f"""
-                        <div class="screenshot-item">
-                            <div class="app-badge" style="background-color: {app_color};">{app_name}</div>
-                            <img src="data:image/png;base64,{get_image_base64(path)}" style="max-height: 400px; width: auto; object-fit: contain; border-radius: 8px; display: block; margin: 0 auto;" alt="{app_name} Screenshot">
-                        </div>
-                        """, unsafe_allow_html=True)
-                    elif path:
-                        st.info(f"Screenshot path: {path}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                path = st.session_state.screenshot_path
-                if path and os.path.exists(path):
-                    app_name = "Unknown App"
-                    app_color = "#6c757d"
-                    if "amazon" in path.lower():
-                        app_name = "Amazon"
-                        app_color = "#ff9500"
-                    elif "youtube" in path.lower():
-                        app_name = "YouTube"
-                        app_color = "#ff0000"
-                    
-                    st.markdown(f"""
-                    <div class="screenshot-item">
-                        <div class="app-badge" style="background-color: {app_color};">{app_name}</div>
-                        <img src="data:image/png;base64,{get_image_base64(path)}" style="max-height: 400px; width: auto; object-fit: contain; border-radius: 8px; display: block; margin: 0 auto;" alt="{app_name} Screenshot">
-                    </div>
-                    """, unsafe_allow_html=True)
-                elif path:
-                    st.info(f"Screenshot path: {path}")
+            path = st.session_state.screenshot_path
+            if path and os.path.exists(path):
+                st.markdown(f"""
+                <div class="screenshot-item">
+                    <img src="data:image/png;base64,{get_image_base64(path)}" class="single-screenshot" alt="Mobile App Screenshot">
+                </div>
+                """, unsafe_allow_html=True)
+            elif path:
+                st.info(f"Screenshot path: {path}")
             
             st.markdown("</div>", unsafe_allow_html=True)
             
     st.markdown("""
     <div style="margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #e1e4e8; text-align: center;">
         <p style="font-size: 0.9rem; color: #6c757d;">
-            <strong>AppAgent-Pro</strong> - A Demo Paper for CIKM 2025
+            <strong>AppAgent</strong> - Multimodal Agent Framework for Mobile Applications
         </p>
         <p style="font-size: 0.85rem; color: #6c757d; margin-top: 0.5rem;">
-            If you use this system in your research, please cite our paper.
+            A novel LLM-based framework designed to operate smartphone applications autonomously.
         </p>
     </div>
     """, unsafe_allow_html=True)
