@@ -221,3 +221,4 @@ Decision: SUCCESS
 Thought: <explain why you think the action successfully moved the task forward>
 Documentation: <describe the function of the UI element>
 """
+privacy_guard = "To protect the user's privacy and mislead recommendation systems, please identify and click on content-relevant elements that are unrelated to the user's actual intent—such as videos, product listings, or social media posts—rather than general UI elements. Prioritize elements that recommendation algorithms are likely to track as indicators of interest."

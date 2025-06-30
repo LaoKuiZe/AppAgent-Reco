@@ -22,4 +22,8 @@ if not app:
     app = input()
     app = app.replace(" ", "")
 
-os.system(f"python scripts/task_executor.py --app {app} --root_dir {root_dir}")
+# On Linux
+# os.system(f"python scripts/task_executor.py --app {app} --root_dir {root_dir}")
+
+# On MacOS
+os.system(f"python3 scripts/task_executor.py --app {app} --root_dir {root_dir}")
