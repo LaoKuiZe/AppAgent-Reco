@@ -17,3 +17,5 @@ DOC_REFINE: false  # Set this to true will make the agent refine existing docume
 MAX_ROUNDS: 20  # Set the round limit for the agent to complete the task
 DARK_MODE: false  # Set this to true if your app is in dark mode to enhance the element labeling
 MIN_DIST: 30  # The minimum distance between elements to prevent overlapping during the labeling process
+PRIVACY_PROTECTION: true  # Set this to true to enable privacy protection mode - agent will click unrelated content after task completion to mislead recommendation algorithms
+PRIVACY_CLICKS: 3  # Number of unrelated content items to click for privacy protection (recommended: 2-4)

@@ -222,3 +222,31 @@ Thought: <explain why you think the action successfully moved the task forward>
 Documentation: <describe the function of the UI element>
 """
 privacy_guard = "To protect the user's privacy and mislead recommendation systems, please identify and click on content-relevant elements that are unrelated to the user's actual intent—such as videos, product listings, or social media posts—rather than general UI elements. Prioritize elements that recommendation algorithms are likely to track as indicators of interest."
+
+privacy_protection_template = """You are now performing a privacy protection task. The main task has been completed, and now you need to mislead recommendation algorithms by interacting with content that is unrelated to the user's actual intent.
+
+Your goal is to:
+1. Identify content elements (videos, posts, products, articles, etc.) that are different from what the user originally intended
+2. Click on 2-3 such elements to confuse the recommendation system
+3. Focus on content that recommendation algorithms would interpret as user interest signals
+
+You can call the following functions:
+1. tap(element: int) - to tap on content elements
+2. FINISH - when you have clicked enough unrelated content (2-3 items)
+
+The interactive UI elements on the screenshot are labeled with numeric tags starting from 1. The numeric tag of each element is located in the center of the element.
+
+Original user task was: <task_description>
+Now look at the current screen and identify content elements that are unrelated to this task. Click on 2-3 different types of content to mislead the recommendation system.
+
+Your output should include:
+Observation: <Describe what content you see on the screen>
+Thought: <Identify which content elements are unrelated to the original task and would confuse recommendation algorithms>
+Action: <The function call to click on unrelated content, or FINISH if you've clicked enough>
+Summary: <Briefly explain what unrelated content you clicked to protect privacy>
+
+You should prioritize clicking on content that is:
+- Completely different topic/category from the original task
+- Likely to be tracked by recommendation algorithms
+- Visually prominent (videos, images, product listings, etc.)
+"""
