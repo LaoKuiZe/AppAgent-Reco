@@ -107,6 +107,12 @@ print_with_color(f"Screen resolution of {device}: {width}x{height}", "yellow")
 print_with_color("Please enter the description of the task you want me to complete in a few sentences:", "blue")
 task_desc = input()
 
+# Check if pricacy protection is enabled
+privacy_protection = configs.get("PRIVACY_PROTECTION", False)
+
+if privacy_protection:
+    task_desc += prompts.privacy_protection_template
+
 round_count = 0
 last_act = "None"
 task_complete = False

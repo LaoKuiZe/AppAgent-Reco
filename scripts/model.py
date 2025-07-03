@@ -115,6 +115,7 @@ def parse_explore_rsp(rsp):
         if "FINISH" in act:
             return ["FINISH"]
         act_name = act.split("(")[0]
+        act_name = act_name.replace("`", "").replace("*", "").replace("_", "").replace("!", "").replace(" ", "")
         if act_name == "tap":
             area = int(re.findall(r"tap\((.*?)\)", act)[0])
             return [act_name, area, last_act]
